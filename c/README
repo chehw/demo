@@ -1,0 +1,28 @@
+# Derive the private key from two signatures that share the same k value
+
+## Dependencies:
+These dependencies are required:
+
+-- libgmp : 
+	apt-get install libgmp-dev
+
+-- libsecp256k1:
+	git clone git@github.com:bitcoin/bitcoin.git
+	cd bitcoin/src/secp256k1
+	./autogen.sh
+	./configure
+	make 
+	sudo make install
+	
+	
+To Build:
+	git clone git@github.com:chehw/demo.git
+	cd chehw/c	
+	mkdir -p bin obj
+	
+	make
+	
+
+
+
+
