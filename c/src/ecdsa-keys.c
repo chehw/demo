@@ -73,7 +73,7 @@ static inline void dump_mpz(const char * prefix, mpz_t m)
 static int p2pkh_to_redeem_script(varstr_t * vpub, unsigned char * redeem_script, size_t * cb_redeem_script)
 {
 	static unsigned char prefix[] = {	/* p2pkh script prefix */
-		0x19,	 /* script length = 27 bytes */
+		0x19,	 /* script length = 25 bytes */
 		0x76, 	/* OP_DUP */
 		0xa9, 	/* OP_HASH160 */
 		0x14	/* OP_PUSH 20 bytes */
