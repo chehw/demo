@@ -15,14 +15,16 @@ These dependencies are required:
 	sudo make install
 	
 	
-To Build:
+# To Build:
 	git clone git@github.com:chehw/demo.git
-	cd chehw/c	
+	cd demo/c	
 	mkdir -p bin obj
 	
 	make
 	
-
+# Build test:
+	cd demo/c
+	make bin/tx-sign
 
 
 

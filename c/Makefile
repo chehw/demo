@@ -38,10 +38,15 @@ $(OBJECTS): obj/%.o : src/%.c
 	
 $(BASE_OBJ): %.o : %.c
 	$(CC) -o $@ -c $< $(CFLAGS)
-	
+
+
+bin/tx-sign: test/tx-sign.c
+	$(LINKER) -o $@ $< $(CFLAGS) $(BASE_OBJ) $(CRYPTO_LIBS) $(LIBS)
+
+
 .PHONY: clean
 clean:
-	rm -rf obj/*.o $(TARGET)
+	rm -rf obj/*.o $(TARGET) test/tx-sign
 
 
 	
