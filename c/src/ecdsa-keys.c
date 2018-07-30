@@ -290,6 +290,7 @@ int main(int argc, char **argv)
 	
 	
 	mpz_t r, s1, s2, e1, e2, n;	
+	mpz_inits(r, s1, s2, e1, e2, n, NULL);
 	mpz_import( r, 4, 1, sizeof(uint64_t), 1, 0, sig_data[0].r);
 	mpz_import(s1, 4, 1, sizeof(uint64_t), 1, 0, sig_data[0].s);
 	mpz_import(s2, 4, 1, sizeof(uint64_t), 1, 0, sig_data[1].s);
@@ -340,7 +341,7 @@ int main(int argc, char **argv)
 
 
 // Step 4) 校验私钥d是否计算正确:
-	printf("\n3) 校验私钥d是否计算正确:\n");
+	printf("\n4) 校验私钥d是否计算正确:\n");
 	unsigned char sec_key[32];
 	size_t cb_key = sizeof(sec_key);
 	mpz_export(sec_key, &cb_key, 1, 1, 1, 0, d);	// mpz -> unsigned char
