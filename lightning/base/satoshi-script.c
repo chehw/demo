@@ -646,18 +646,20 @@ static inline int script_opcode_check_multisig_verify(satoshi_script_t * script)
 	{
 		satoshi_stack_node_free(sig_nodes[i]); 
 	}
-	return ok;
+	
+	if(ok) return 0;
+	return -1;
 }
 
 
 static inline int script_opcode_check_multisig(satoshi_script_t * script)
 {
-	int ok = script_opcode_check_multisig_verify(script);
-	printf("%s()=%d\n", __FUNCTION__, ok);
+	int rc = script_opcode_check_multisig_verify(script);
+	printf("%s()=%d\n", __FUNCTION__, rc);
 	
 	script->main = satoshi_stack_push(script->main, 
 		satoshi_stack_node_new(satoshi_stack_node_type_bool,
-			(void *)(long)(ok), 0));
+			(void *)(long)(0 == rc), 0));
 	return 0;
 }
 
