@@ -28,7 +28,13 @@ extern "C" {
 //~ // otherwise as UNIX timestamp.
 //~ static const unsigned int LOCKTIME_THRESHOLD = 500000000; // Tue Nov  5 00:53:20 1985 UTC
 
-#define MAX_SCRIPT_ELEMENT_SIZE 520
+#define MAX_SCRIPT_ELEMENT_SIZE 	520
+#define MAX_OPS_PER_SCRIPT			210
+#define MAX_PUBKEYS_PER_MULTISIG 	20
+#define MAX_SCRIPT_SIZE				10000
+#define MAX_STACK_SIZE				1000
+#define LOCKTIME_THRESHOLD			500000000	 /* Tue Nov  5 00:53:20 1985 UTC */
+
 
 /** Script opcodes */
 enum opcode_type
@@ -180,6 +186,9 @@ enum opcode_type
 typedef struct satoshi_stack_node satoshi_stack_node_t;
 typedef struct satoshi_stack_node * satoshi_stack_t;
 void satoshi_stack_node_dump(satoshi_stack_node_t * node);
+void satoshi_stack_node_free(satoshi_stack_node_t * node);
+
+satoshi_stack_node_t * satoshi_stack_pop(satoshi_stack_t * stack);
 
 typedef struct satoshi_script
 {
@@ -197,8 +206,9 @@ typedef struct satoshi_script
 	uint32_t sequence;
 	uint32_t locktime;
 	
-	int flags;		/* 0: parse sig_script; 1: verify redeem script */
+	int flags;		/* 0: parse sig_script; 1: verify redeem script; 2: parse p2sh script */
 	int err_code;
+	int bip16;	/* p2sh flags */
 	unsigned char last_op; 	// if failed, check last opcode and err_code for details
 }satoshi_script_t;
 int satoshi_script_init(satoshi_script_t * script);
@@ -209,6 +219,7 @@ int satoshi_script_op(satoshi_script_t * script, unsigned char op);
 
 int satoshi_script_parse_sig_script(satoshi_script_t * script, const unsigned char * sig_script, size_t size);
 int satoshi_script_verify_redeem_script(satoshi_script_t * script, const unsigned char * redeem_script, size_t size);
+int satoshi_script_parse_p2sh_script(satoshi_script_t * script, const unsigned char * p2sh_script, size_t size);
 
 int64_t satoshi_script_pop_result(satoshi_script_t * script);
 

@@ -52,13 +52,57 @@
 #include "satoshi-script.h"
 #include <inttypes.h>
 
+/* [pubkey or p2sh script] to [redeem_script (type: varstr_t)] */
+static int vpub_to_redeem_script(varstr_t * vpub, enum raw_txin_type type, unsigned char * redeem_script, size_t * cb_redeem_script)
+{
+	unsigned char * p = redeem_script;
+	/* add prefix */
+	switch(type)
+	{
+	case raw_txin_type_p2pkh:
+		*p++ = 0x19;	 /* script length = 25 bytes */
+		*p++ = 0x76; 	/* OP_DUP */
+		*p++ = 0xa9; 	/* OP_HASH160 */
+		*p++ = 0x14;	/* OP_PUSH 20 bytes */
+		break;
+	case raw_txin_type_p2sh:
+		*p++ = 0x17;	 /* script length = 25 bytes */
+		*p++ = 0xa9; 	/* OP_HASH160 */
+		*p++ = 0x14;	/* OP_PUSH 20 bytes */
+		break;
+	default:
+		return -1;
+	}
+	
+	/* add hash160 */
+	hash160(varstr_get(vpub), varstr_strlen(vpub), p);
+	p += 20;
+	
+	
+	/* add suffix */
+	switch(type)
+	{
+	case raw_txin_type_p2pkh:
+		*p++ = 0x88;	/* OP_EQUALVERIFY */
+		*p++ = 0xac;		/* OP_CHECKSIG */
+		break;
+	case raw_txin_type_p2sh:
+		*p++ = 0x87;	/* OP_EQUAL */
+		break;
+	default:
+		return -1;
+	}
+	*cb_redeem_script = p - redeem_script;
+	return 0;
+}
+
 
 /* 
  * bitcoin address: 1xxxxxxx 
  * 	type: pay to public key hash
  *  
  */
-static int p2pkh_to_redeem_script(varstr_t * vpub, unsigned char * redeem_script, size_t * cb_redeem_script)
+int p2pkh_to_redeem_script(varstr_t * vpub, unsigned char * redeem_script, size_t * cb_redeem_script)
 {
 	static unsigned char prefix[] = {	/* p2pkh script prefix */
 		0x19,	 /* script length = 25 bytes */
@@ -130,8 +174,15 @@ int satoshi_raw_tx_get_preimage(satoshi_raw_tx_t * raw_tx, int index, unsigned c
 		
 		if(i == index)	/* 如果是当前准备签名（或验证）的txin，就附加其公钥对应的[redeem_script] */
 		{
-			memcpy(dst, txin->redeem_script, txin->cb_redeem_script);
-			dst += txin->cb_redeem_script;
+			if(txin->type == raw_txin_type_p2pkh)
+			{
+				memcpy(dst, txin->redeem_script, txin->cb_redeem_script);
+				dst += txin->cb_redeem_script;
+			}else if(txin->type == raw_txin_type_p2sh)
+			{
+				varstr_set((varstr_t *)dst, txin->pubkey, txin->cb_pubkey);
+				dst += varstr_size((varstr_t *)dst);
+			}
 			
 			hash_type = txin->hash_type;
 		}else /* 否则，将此处的脚本长度设为0 */
@@ -241,7 +292,8 @@ size_t parse_tx_v1(const unsigned char * tx,
 		src += varstr_size(vsig_pubkey); // skip signature and pubkey
 		
 		/* calc redeem script */
-		p2pkh_to_redeem_script(vpub, txin->redeem_script, &txin->cb_redeem_script);
+		vpub_to_redeem_script(vpub, txin->type, txin->redeem_script, &txin->cb_redeem_script);
+		//~ p2pkh_to_redeem_script(vpub, txin->redeem_script, &txin->cb_redeem_script);
 		
 		
 		/* copy sequence */

@@ -64,10 +64,10 @@ typedef struct satoshi_raw_tx
 	uint32_t lock_time;
 }satoshi_raw_tx_t;
 
-size_t parse_tx_v1(const unsigned char * tx, 
-	size_t tx_size, 
-	satoshi_raw_tx_t * raw_tx);
+size_t parse_tx_v1(const unsigned char * tx, size_t tx_size, satoshi_raw_tx_t * raw_tx);
+int satoshi_raw_tx_get_preimage(satoshi_raw_tx_t * raw_tx, int index, unsigned char preimage[], size_t * cb_preimage);
 void satoshi_raw_tx_dump(satoshi_raw_tx_t * raw_tx);
+void satoshi_raw_tx_cleanup(satoshi_raw_tx_t * raw_tx);
 
 #ifdef __cplusplus
 }

@@ -1,4 +1,4 @@
-#lightning-network demo
+# lightning-network demo
 
 
 ## Dependencies:

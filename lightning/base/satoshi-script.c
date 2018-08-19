@@ -98,7 +98,7 @@ void satoshi_stack_node_dump(satoshi_stack_node_t * node)
 	{
 	case satoshi_stack_node_type_data:
 	case satoshi_stack_node_type_pointer:
-		printf("\tdata: "); dump2(stdout, node->ptr, node->size);
+		printf("\tdata: "); dump2(stdout, node->ptr, node->size); printf("\n");
 		break;
 	default:
 		printf("\tvalue: %ld\n", node->i64);
@@ -179,7 +179,7 @@ satoshi_stack_node_t * satoshi_stack_node_new(enum satoshi_stack_node_type type,
 		node->size = size;
 		return node;
 	case satoshi_stack_node_type_int:
-		node->i64 = *(int32_t *)data;
+		node->i64 = (int64_t)(long)data;
 		node->size = 0;
 		return node;
 	case satoshi_stack_node_type_bool:
@@ -235,7 +235,7 @@ satoshi_stack_node_t * satoshi_stack_pop(satoshi_stack_t * p_stack)
 	if(top)
 	{
 		debug_printf("%s(%p)\n", __FUNCTION__, top);
-		satoshi_stack_node_dump(top);
+		//~ satoshi_stack_node_dump(top);
 	
 		*p_stack = top->next;
 		top->next = NULL;
@@ -250,7 +250,7 @@ int satoshi_script_init(satoshi_script_t * script)
 	assert(script);
 	memset(script, 0, sizeof(satoshi_script_t));
 	
-	script->secp = secp256k1_context_create(SECP256K1_CONTEXT_VERIFY);
+	script->secp = secp256k1_context_create(SECP256K1_CONTEXT_VERIFY | SECP256K1_CONTEXT_SIGN);
 	assert(script->secp);
 	
 	return 0;
@@ -296,6 +296,11 @@ int satoshi_script_op(satoshi_script_t * script, unsigned char op)
 	if(op <= OP_PUSHDATA4)
 	{
 		size_t size = 0;
+		if(op == 0 && script->flags == 0) /* OP_0 in sig_script */
+		{
+			script->bip16 = 1;	/* add p2sh support */
+		}
+		
 		if(op < OP_PUSHDATA1)
 		{
 			size = op;
@@ -318,6 +323,7 @@ int satoshi_script_op(satoshi_script_t * script, unsigned char op)
 		
 		script->main = satoshi_stack_push(script->main,
 			satoshi_stack_node_new(satoshi_stack_node_type_data, script->p_cur, size));
+		
 		script->p_cur += size;
 		return 0;
 	}
@@ -420,7 +426,7 @@ static inline int script_opcode_equal(satoshi_script_t * script)
 	rc = satoshi_stack_node_compare(node1, node2);
 	
 	script->main = satoshi_stack_push(script->main,
-			satoshi_stack_node_new(satoshi_stack_node_type_bool, (void *)(long)(bool)rc, 0));
+			satoshi_stack_node_new(satoshi_stack_node_type_bool, (void *)(long)(bool)(rc == 0), 0));
 	return 0;
 }
 
@@ -570,6 +576,91 @@ static inline int script_opcode_hash256(satoshi_script_t * script)
 	return 0;
 }
 
+static inline int script_opcode_check_multisig_verify(satoshi_script_t * script)
+{
+	auto_stack_node_ptr num_pubkeys_node = satoshi_stack_pop(&script->main);
+	assert(num_pubkeys_node && num_pubkeys_node->type == satoshi_stack_node_type_int);
+	
+	int num_pubkeys = (int)num_pubkeys_node->i64;
+	
+	satoshi_stack_node_t * pubkey_nodes[MAX_PUBKEYS_PER_MULTISIG];
+	satoshi_stack_node_t * sig_nodes[MAX_PUBKEYS_PER_MULTISIG];
+	secp256k1_pubkey pubkeys[MAX_PUBKEYS_PER_MULTISIG];
+	secp256k1_ecdsa_signature sigs[MAX_PUBKEYS_PER_MULTISIG];
+	secp256k1_context * secp = script->secp;
+	int rc;
+	
+	memset(pubkeys, 0, sizeof(pubkeys));
+	memset(sigs, 0, sizeof(sigs));
+	
+	for(int i = 0; i < num_pubkeys; ++i)
+	{
+		pubkey_nodes[i] = satoshi_stack_pop(&script->main);
+		assert(pubkey_nodes[i] && pubkey_nodes[i]->size >= 33 && pubkey_nodes[i]->size <= 65);
+		
+		rc = secp256k1_ec_pubkey_parse(secp, &pubkeys[i], pubkey_nodes[i]->ptr, pubkey_nodes[i]->size);
+		assert(rc);
+	}
+	
+	auto_stack_node_ptr num_sigs_node = satoshi_stack_pop(&script->main);
+	assert(num_sigs_node && num_sigs_node->type == satoshi_stack_node_type_int);
+	
+	int num_sigs = (int)num_sigs_node->i64;
+	
+	/* pop signatures and verify */
+	int pubkey_offset = 0;
+	int ok = 0;
+	int sigs_count = 0;
+	
+	printf("num_pubkeys: %d, num_sigs: %d\n", num_pubkeys, num_sigs);
+	
+	for(int i = 0; i < num_sigs; ++i, ++sigs_count)
+	{
+		ok = 0;
+		if(pubkey_offset >= MAX_PUBKEYS_PER_MULTISIG) break;
+		
+		sig_nodes[i] = satoshi_stack_pop(&script->main);
+		assert(sig_nodes[i] && sig_nodes[i]->size > 60);
+		
+		rc = secp256k1_ecdsa_signature_parse_der(secp, &sigs[i], sig_nodes[i]->ptr, sig_nodes[i]->size - 1);
+		assert(rc);
+		
+		while(pubkey_offset < num_pubkeys)
+		{
+			ok = secp256k1_ecdsa_verify(secp, &sigs[i], script->msg_hash, & (pubkeys[pubkey_offset]));
+			++pubkey_offset;
+			if(ok) break;
+		}
+	}
+	
+	if(sigs_count < num_sigs) ok = 0;
+	
+	
+
+	/* cleanup */
+	for(int i = 0; i < num_pubkeys; ++i)
+	{
+		satoshi_stack_node_free(pubkey_nodes[i]); 
+	}
+	for(int i = 0; i < num_sigs; ++i)
+	{
+		satoshi_stack_node_free(sig_nodes[i]); 
+	}
+	return ok;
+}
+
+
+static inline int script_opcode_check_multisig(satoshi_script_t * script)
+{
+	int ok = script_opcode_check_multisig_verify(script);
+	printf("%s()=%d\n", __FUNCTION__, ok);
+	
+	script->main = satoshi_stack_push(script->main, 
+		satoshi_stack_node_new(satoshi_stack_node_type_bool,
+			(void *)(long)(ok), 0));
+	return 0;
+}
+
 static int script_opcode_handler(satoshi_script_t * script, unsigned char op)
 {
 	//if(!is_opcode_valid(op, script->flags) return -1;
@@ -584,7 +675,11 @@ static int script_opcode_handler(satoshi_script_t * script, unsigned char op)
 		return -1;
 	
 	case OP_1NEGATE: // 0x4f,
+		script->main = satoshi_stack_push(script->main, 
+			satoshi_stack_node_new(satoshi_stack_node_type_int, (void *)(long)(-1), 0));
+		return 0;
 	case OP_RESERVED: // 0x50,
+		return -1;
 	case OP_1: // 0x51,
 	//~ case OP_TRUE: // OP_1,
 	case OP_2: // 0x52,
@@ -602,6 +697,9 @@ static int script_opcode_handler(satoshi_script_t * script, unsigned char op)
 	case OP_14: // 0x5e,
 	case OP_15: // 0x5f,
 	case OP_16: // 0x60,
+		script->main = satoshi_stack_push(script->main, 
+			satoshi_stack_node_new(satoshi_stack_node_type_int, (void *)(long)(op - OP_RESERVED), 0));
+		return 0;
 
 	//control
 	case OP_NOP: // 0x61,
@@ -706,14 +804,18 @@ static int script_opcode_handler(satoshi_script_t * script, unsigned char op)
 	case OP_CHECKSIG: // 0xac,
 		return script_opcode_checksig(script);
 	case OP_CHECKSIGVERIFY: // 0xad,
+		break;
 	case OP_CHECKMULTISIG: // 0xae,
+		return script_opcode_check_multisig(script);
 	case OP_CHECKMULTISIGVERIFY: // 0xaf,
-
+		return script_opcode_check_multisig_verify(script);
 	//expansion
 	case OP_NOP1: // 0xb0,
 	case OP_CHECKLOCKTIMEVERIFY: // 0xb1,
+		//~ return script_opcode_check_locktime_verify(script);
 	//~ case OP_NOP2: // OP_CHECKLOCKTIMEVERIFY,
 	case OP_CHECKSEQUENCEVERIFY: // 0xb2,
+		//~ return script_opcode_check_sequence_verify(script);
 	//~ case OP_NOP3: // OP_CHECKSEQUENCEVERIFY,
 	case OP_NOP4: // 0xb3,
 	case OP_NOP5: // 0xb4,
@@ -781,5 +883,23 @@ int satoshi_script_verify_redeem_script(satoshi_script_t * script, const unsigne
 		int rc = satoshi_script_op(script, op);
 		if(rc) return rc;	/* parse failed. */
 	}
+	return 0;
+}
+
+int satoshi_script_parse_p2sh_script(satoshi_script_t * script, const unsigned char * p2sh_script, size_t size)
+{
+	script->flags = 2;
+	
+	/* parse sig_script */
+	script->p_cur = script->p_begin = p2sh_script;
+	script->p_end = p2sh_script + size;
+	
+	while(script->p_cur < script->p_end)
+	{
+		unsigned char op = * (script->p_cur++);
+		int rc = satoshi_script_op(script, op);
+		if(rc) return rc;	/* parse failed. */
+	}
+	
 	return 0;
 }
