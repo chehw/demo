@@ -1,0 +1,891 @@
+/*
+ * bitcoin-scripts.c
+ * 
+ * Copyright 2018 Che Hongwei <htc.chehw@gmail.com>
+ * 
+ * The MIT License (MIT)
+ * 
+ * Permission is hereby granted, free of charge, to any person 
+ * obtaining a copy of this software and associated documentation 
+ * files (the "Software"), to deal in the Software without restriction, 
+ * including without limitation the rights to use, copy, modify, merge, 
+ * publish, distribute, sublicense, and/or sell copies of the Software, 
+ * and to permit persons to whom the Software is furnished to do so, 
+ * subject to the following conditions:
+ * 
+ * The above copyright notice and this permission notice shall be included
+ *  in all copies or substantial portions of the Software.
+ * 
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, 
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES 
+ * OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. 
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, 
+ * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR 
+ * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR 
+ * THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * 
+ */
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+
+#include "satoshi-types.h"
+#include "sha256.h"
+#include "utils.h"
+#include "ripemd160.h"
+#include "satoshi-script.h"
+
+#include "bitcoin-scripts.h"
+
+// Maximum number of bytes pushable to the stack
+static const unsigned int MAX_SCRIPT_ELEMENT_SIZE = 520;
+
+// Maximum number of non-push operations per script
+static const int MAX_OPS_PER_SCRIPT = 201;
+
+// Maximum number of public keys per multisig
+static const int MAX_PUBKEYS_PER_MULTISIG = 20;
+
+// Maximum script length in bytes
+static const int MAX_SCRIPT_SIZE = 10000;
+
+// Maximum number of values on script interpreter stack
+static const int MAX_STACK_SIZE = 1000;
+
+// Threshold for nLockTime: below this value it is interpreted as block number,
+// otherwise as UNIX timestamp.
+static const unsigned int LOCKTIME_THRESHOLD = 500000000; // Tue Nov  5 00:53:20 1985 UTC
+
+
+/**************************************************************
+ * stack 
+ **************************************************************/
+
+enum ch_stack_node_type
+{
+	ch_stack_node_type_unknown = 0,
+	ch_stack_node_type_data = 1,
+	ch_stack_node_type_op = 2,
+	ch_stack_node_pointer = 3,	/* no-free */
+};
+
+typedef struct ch_stack_node
+{
+	enum ch_stack_node_type type;
+	union
+	{
+		varstr_t * vdata;
+		unsigned char op[1];
+	};
+	struct ch_stack_node * next;
+}ch_stack_node_t;
+void ch_stack_node_free(ch_stack_node_t * node);
+
+int ch_stack_node_compare(const ch_stack_node_t * a, const ch_stack_node_t * b)
+{
+	if(a->type != b->type) return 0xff;
+	if(a->type != ch_stack_node_type_data) return 0xffff;
+	
+	size_t cb1 = varstr_strlen(a->vdata);
+	size_t cb2 = varstr_strlen(b->vdata);
+	if(cb1 != cb2) return 0x7fffffff;
+	
+	return memcmp(varstr_get(a->vdata), varstr_get(b->vdata), cb1);  
+}
+
+ch_stack_node_t * ch_stack_node_dup(const ch_stack_node_t * node)
+{
+	ch_stack_node_t * new_node = calloc(1, sizeof(ch_stack_node_t));
+	assert(NULL != new_node);
+	new_node->type = node->type;
+	switch(node->type)
+	{
+	case ch_stack_node_type_data:
+	case ch_stack_node_type_unknown:
+	case ch_stack_node_pointer:
+		new_node->vdata = varstr_set(NULL,
+			varstr_get(node->vdata), varstr_strlen(node->vdata));
+		if(new_node->type == ch_stack_node_pointer)
+		{
+			new_node->type = ch_stack_node_type_data;
+		}
+		break;
+	case ch_stack_node_type_op:
+		new_node->op[0] = node->op[0];
+		break;
+	default:
+		ch_stack_node_free(new_node);
+		return NULL;
+	}
+	return new_node;
+}
+
+
+
+typedef struct ch_stack_node * ch_stack_t;
+ch_stack_t ch_stack_push(ch_stack_t stack, ch_stack_node_t * node)
+{
+	assert(node);
+	node->next = stack;
+	return node;
+}
+
+ch_stack_node_t * ch_stack_pop(ch_stack_t * p_stack)
+{
+	assert(NULL != p_stack);
+	
+	ch_stack_t stack = *p_stack;
+	ch_stack_node_t * node = stack;
+	if(stack) 
+	{
+		stack = stack->next;
+		*p_stack = stack;
+	}
+	return node;
+}
+
+ch_stack_node_t * ch_stack_peek(ch_stack_t stack)
+{
+	return stack;
+}
+
+
+
+bitcoin_script_t * bitcoin_script_init(bitcoin_script_t * script)
+{
+	if(NULL == script)
+	{
+		script = calloc(1, sizeof(script));
+		assert(NULL != script);
+	}
+}
+
+void bitcoin_script_cleanup(bitcoin_script_t * script)
+{
+	if(script)
+	{
+		ch_stack_free(script->st_data);
+		ch_stack_free(script->st_alt);
+	}
+}
+
+
+
+int bitcoin_script_parse_sig_script(bitcoin_script_t * script, const unsigned char * p_script, size_t length)
+{
+	script->p_begin = p_script;
+	script->p_end = p_script + length;
+	script->p_cur = p_script;
+	
+	
+	
+	return 0;
+}
+void bitcoin_script_set_msg_hash(bitcoin_script_t * script, const unsigned char * msg_hash)
+{
+	memcpy(script->msg_hash, msg_hash, 32);
+	return;
+}
+
+int bitcoin_script_verify_redeem_script(bitcoin_script_t * script, const unsigned char * p_script, size_t length)
+{
+	script->p_begin = p_script;
+	script->p_end = p_script + length;
+	script->p_cur = p_script;
+	
+	return 0;
+}
+
+
+
+static const char * indent = "\t";
+#define INDENT() printf(indent)
+
+void ch_stack_dump(ch_stack_t stack)
+{
+	ch_stack_node_t * node = stack;
+	while(node)
+	{
+		INDENT(); printf("=== type: %d ====\n", (int)node->type);
+		size_t cb = 1;
+		switch(node->type)
+		{
+		case ch_stack_node_type_op:
+			INDENT(); printf("\top=0x%.2x\n", node->op[0]);
+			break;
+		case ch_stack_node_type_data:
+			cb = varstr_strlen(node->vdata);			
+			INDENT(); printf("data(cb=%ld): ", (long)cb);
+			dump2(stdout, varstr_get(node->vdata), cb);
+			printf("\n");
+			break;
+		default:
+			INDENT(); printf("\tunknown type: %d\n",  (int)node->type);
+		}
+		node = node->next;
+	}
+}
+
+
+
+
+
+#ifdef _STAND_ALONE
+/* 
+ * bitcoin address: 1xxxxxxx 
+ * 	type: pay to public key hash
+ *  
+ */
+static int p2pkh_to_redeem_script(varstr_t * vpub, unsigned char * redeem_script, size_t * cb_redeem_script)
+{
+	static unsigned char prefix[] = {	/* p2pkh script prefix */
+		0x19,	 /* script length = 25 bytes */
+		0x76, 	/* OP_DUP */
+		0xa9, 	/* OP_HASH160 */
+		0x14	/* OP_PUSH 20 bytes */
+	};
+	
+	static unsigned char suffix[] = 
+	{
+		0x88,	/* OP_EQUALVERIFY */
+		0xac	/* OP_CHECKSIG */
+	};
+	
+	unsigned char * dst = redeem_script;
+	 
+	unsigned char hash[20];
+	unsigned char * pubkey = (unsigned char *)varstr_get(vpub);
+	size_t cb_pubkey = varstr_strlen(vpub);	
+	hash160(pubkey, cb_pubkey, hash);
+	
+	
+	memcpy(dst, prefix, sizeof(prefix));
+	dst += sizeof(prefix);
+	
+	memcpy(dst, hash, sizeof(hash));
+	dst += sizeof(hash);
+	 
+	memcpy(dst, suffix, sizeof(suffix));
+	dst += sizeof(suffix);
+	
+	*cb_redeem_script = dst - redeem_script;
+	return 0;
+}
+
+
+typedef struct raw_txin raw_txin_t;
+struct raw_txin
+{
+	struct
+	{
+		uint8_t prev_hash[32];
+		uint32_t index;
+	}outpoint;
+	
+	unsigned char sig_script[4096];
+	size_t cb_sig_script;
+	
+	unsigned char redeem_script[100];
+	size_t cb_redeem_script;
+	
+	unsigned char sig[100];
+	size_t cb_sig;
+	
+	uint32_t hash_type;
+	
+	unsigned char pubkey[65];
+	size_t cb_pubkey;
+	
+	uint32_t sequence;
+}__attribute__((packed));
+
+typedef struct satoshi_raw_tx
+{
+	int32_t version;
+	size_t txin_count;
+	raw_txin_t * txins;
+//	size_t txout_count;
+	unsigned char * txouts_data;
+	size_t cb_txouts;
+//	uint32_t lock_time;
+}satoshi_raw_tx_t;
+
+
+void satoshi_raw_tx_cleanup(satoshi_raw_tx_t * raw_tx)
+{
+	if(raw_tx)
+	{
+		free(raw_tx->txins);
+		free(raw_tx->txouts_data);
+	}
+}
+
+int satoshi_raw_tx_get_preimage(satoshi_raw_tx_t * raw_tx, int index, unsigned char preimage[], size_t * cb_preimage)
+{
+	assert(index >= 0 && index < raw_tx->txin_count);
+	unsigned char * dst = preimage;
+	
+	unsigned char * p_end = preimage + (*cb_preimage);
+	
+	*(int32_t *)dst = raw_tx->version; dst += sizeof(int32_t);
+	varint_set((varint_t *)dst, raw_tx->txin_count);
+	dst += varint_size((varint_t *)dst);
+	
+	uint32_t hash_type = 1;
+	
+	for(size_t i = 0; i < raw_tx->txin_count; ++i)
+	{
+		raw_txin_t * txin = &raw_tx->txins[i];
+		memcpy(dst, &txin->outpoint, sizeof(satoshi_outpoint_t));
+		dst += sizeof(satoshi_outpoint_t);
+		
+		
+		if(i == index)	/* 如果是当前准备签名（或验证）的txin，就附加其公钥对应的[redeem_script] */
+		{
+			memcpy(dst, txin->redeem_script, txin->cb_redeem_script);
+			dst += txin->cb_redeem_script;
+			
+			hash_type = txin->hash_type;
+		}else /* 否则，将此处的脚本长度设为0 */
+		{
+			*dst++ = 0;
+		}
+		
+		*(uint32_t *)dst = txin->sequence;
+		dst += sizeof(uint32_t);
+		assert(dst < p_end);
+	}
+	
+	memcpy(dst, raw_tx->txouts_data, raw_tx->cb_txouts);
+	dst += raw_tx->cb_txouts;
+	assert(dst < p_end);
+	
+	*(uint32_t *)dst = hash_type;
+	dst += sizeof(uint32_t);
+	
+	assert(dst <= p_end);
+	
+	*cb_preimage = (dst - preimage);
+	return 0;
+}
+
+/* 
+ * parse_tx:
+ * 	parse binary tx data and generate prehash image (raw_tx) 
+ */
+static size_t parse_tx_v1(const unsigned char * tx, 
+	size_t tx_size, 
+	satoshi_raw_tx_t * raw_tx)
+{
+	assert(NULL != tx && tx_size > 100 && NULL != raw_tx);
+	
+	const unsigned char * src = tx;
+	const unsigned char * p_end = tx + tx_size;
+	
+	// tx version
+	raw_tx->version = *(int32_t *)src;	src += sizeof(int32_t);
+	
+	raw_tx->txin_count	= varint_get((varint_t *)src);
+	src += varint_size((varint_t *)src);
+	
+	assert(raw_tx->txin_count > 0);
+	
+	/* parse txins */
+	raw_tx->txins = (raw_txin_t *)calloc(raw_tx->txin_count, sizeof(raw_txin_t));
+	
+	for(size_t i = 0; i < raw_tx->txin_count; ++i)
+	{
+		raw_txin_t * txin = & raw_tx->txins[i];
+		
+		// copy outpoint
+		memcpy(&txin->outpoint, src, sizeof(satoshi_outpoint_t));
+		src += sizeof(satoshi_outpoint_t);
+		
+		// parse signature / hashtype / pubkey
+		varstr_t * vsig_pubkey = (varstr_t *)src;
+		/* copy sigScripts */
+		txin->cb_sig_script = varstr_size(vsig_pubkey);
+		assert(txin->cb_sig_script <= sizeof(txin->sig_script));
+		memcpy(txin->sig_script, src, txin->cb_sig_script);
+		
+		
+		varstr_t * vsig_hashtype = (varstr_t *)((unsigned char *)vsig_pubkey + varint_size((varint_t *)vsig_pubkey));	
+		unsigned  char * sig_der = (unsigned char *)vsig_hashtype + varint_size((varint_t *)vsig_hashtype);
+		
+		/* copy signature */
+		txin->cb_sig = varstr_strlen(vsig_hashtype) - 1;
+		memcpy(txin->sig, sig_der, txin->cb_sig);
+		
+		/* get hash type */
+		txin->hash_type = sig_der[txin->cb_sig];
+		varstr_t * vpub = (varstr_t *)((unsigned char *)vsig_hashtype + varstr_size(vsig_hashtype));
+		
+		/* copy pubkey */
+		txin->cb_pubkey = varstr_strlen(vpub);
+		memcpy(txin->pubkey, varstr_get(vpub), txin->cb_pubkey);
+		src += varstr_size(vsig_pubkey); // skip signature and pubkey
+		
+		/* calc redeem script */
+		p2pkh_to_redeem_script(vpub, txin->redeem_script, &txin->cb_redeem_script);
+		
+		/* copy sequence */
+		txin->sequence = *(uint32_t *)src; 
+		src += sizeof(uint32_t);		
+	}
+	assert(src < p_end);
+	
+	raw_tx->cb_txouts = p_end - src;
+	raw_tx->txouts_data = malloc(raw_tx->cb_txouts);
+	assert(NULL != raw_tx->txouts_data);	
+	memcpy(raw_tx->txouts_data, src, raw_tx->cb_txouts);
+	
+	src += raw_tx->cb_txouts;
+	assert(src <= p_end);
+	
+	return (size_t)(src - tx);
+}
+ 
+static int parse_sig_script(const unsigned char * begin, 
+	const unsigned char * p_end,
+	ch_stack_t * p_stack_op, 
+	ch_stack_t * p_stack_data,
+	ch_stack_t * p_stack_alt);
+	
+static int verify_redeem_script(const unsigned char * begin, 
+	const unsigned char * p_end,
+	ch_stack_t * p_stack_op, 
+	ch_stack_t * p_stack_data,
+	ch_stack_t * p_stack_alt,
+	const unsigned char * msg_hash);
+
+/* txid: "3b97e57b45700f4f83507fc3d5751f9baa934e3986baea510ad61703775cf737" */
+static const char * tx_hex = 
+	"01000000"
+	"02"
+		"6d12d9477e1085c97660d5532e47b88fa2b0ab8c643af84b2ebe64b6db5bd80001000000"
+		"6a"
+			"47"
+			"304402205684fe30d2b01d093d549f94d180f5df29cd007673ec995465a76d747f0cad7b"
+				"02200a1db7abeec033875d5daa06f1bdb3f278b7e752b05f6f05a4c889e4b2f92217"
+			"01"
+			"210365d88cbea2ccea10888b328f070868dc3b841f152eea8817e3cc43c8d87b8afe"
+		"ffffffff"
+		"6d12d9477e1085c97660d5532e47b88fa2b0ab8c643af84b2ebe64b6db5bd80000000000"
+		"6a"
+			"47"
+			"304402200b3d64b6d5f1f9854d4c85a55c22deb3fb49f6efcdcf5952953cdca82aa6c4af"
+				"022056d2465cc0accbc2435dfce3f2f866debc1c347d79d7872c76590a1aa9bffd48"
+			"01"
+			"210398a27ae243c9a3ec9c264fd460e9faa0da342a8d2186985e138fe380a8cbf853"
+		"ffffffff"
+	"02"
+		"24108a0000000000" "17a9146894eeb7a180709cb1ad48b20e18da5e2d6d564987"
+		"f928b90000000000" "1976a91475ddc928990a7fbfabdcc5402cb366fd6cdc41eb88ac"
+	"00000000";
+	
+		
+#include <secp256k1.h>
+int main(int argc, char **argv)
+{
+	
+
+	ch_stack_t st_data = NULL, st_op = NULL, st_alt = NULL;
+	
+	static unsigned char tx[65536];
+	static unsigned char pre_image[65536];
+	ssize_t cb_tx = 0;
+	ssize_t cb_preimage;
+	
+	cb_tx = hex2bin(tx_hex, -1, tx);
+	
+	satoshi_raw_tx_t raw_tx[1];
+	memset(raw_tx, 0, sizeof(raw_tx));
+	
+	ssize_t cb = parse_tx_v1(tx, cb_tx, raw_tx);
+	
+	printf("cb_tx=%ld, cb=%ld\n", cb_tx, cb);
+	
+	for(ssize_t ii = 0; ii < raw_tx->txin_count; ++ii)
+	{
+		indent = "\t";
+		raw_txin_t * txin = &raw_tx->txins[ii];
+		assert(txin);
+		
+		unsigned char hash[32];
+		memset(hash, 0, 32);
+		
+		cb_preimage = sizeof(pre_image);
+		(void)satoshi_raw_tx_get_preimage(raw_tx, ii,
+			pre_image, (size_t *)&cb_preimage);
+		assert(cb_preimage > 0);
+		
+		hash256(pre_image, cb_preimage, hash);
+		
+		printf("txin[%ld]: \n\toutpoint: ", ii);
+		dump2(stdout, &txin->outpoint, sizeof(txin->outpoint));
+		printf("\n");
+		
+		/* parse pkscript */
+		printf("\tsig_script: ");
+		dump2(stdout, &txin->sig_script, txin->cb_sig_script);
+		printf("\n");
+		
+		
+		unsigned char * p = (unsigned char *)txin->sig_script;
+		unsigned char * p_end = p + txin->cb_sig_script;
+		int rc = 0;
+		rc = parse_sig_script(p + 1, p_end, &st_op, &st_data, &st_alt);
+		
+		assert(0 == rc);
+		
+		
+		indent = "\t\t";
+		printf("\t[st_data]: %p\n", st_data);
+		ch_stack_dump(st_data);
+		
+		printf("\t[st_op]: %p\n", st_op);
+		ch_stack_dump(st_op);
+		
+		
+		
+		/* parse redeem_script */
+		INDENT(); printf("redeem_script: ");
+		dump2(stdout, &txin->redeem_script, txin->cb_redeem_script);
+		printf("\n");
+		
+		p = (unsigned char *)txin->redeem_script;
+		p_end = p + txin->cb_redeem_script;
+		verify_redeem_script(p + 1, p_end, &st_op, &st_data, &st_alt, hash);
+		
+		indent = "\t\t";
+		printf("\t[st_data]: %p\n", st_data);
+		ch_stack_dump(st_data);
+		
+		printf("\t[st_op]: %p\n", st_op);
+		ch_stack_dump(st_op);
+		
+		/* cleanup */
+		ch_stack_node_t * node = NULL;
+		while((node = ch_stack_pop(&st_data)))
+		{
+			ch_stack_node_free(node);
+		}
+		while((node = ch_stack_pop(&st_op)))
+		{
+			ch_stack_node_free(node);
+		}
+		
+	}
+	
+	
+	
+	satoshi_raw_tx_cleanup(raw_tx);
+	
+	return 0;
+}
+
+ch_stack_node_t * ch_stack_node_new(enum ch_stack_node_type type, 
+	const unsigned char * data, size_t size)
+{
+	ch_stack_node_t * node = calloc(1, sizeof(ch_stack_node_t));
+	assert(NULL != node);
+	node->type = type;
+	
+	switch(type)
+	{
+	case ch_stack_node_type_op:
+		
+		node->op[0] = *data;
+		break;
+	case ch_stack_node_type_data:
+		node->vdata = varstr_set(NULL, data, size);
+		break;
+	default:
+		free(node);
+		return NULL;
+	}
+	return node;
+}
+
+void ch_stack_node_free(ch_stack_node_t * node)
+{
+	if(node)
+	{
+		if(node->type == ch_stack_node_type_data)
+		{
+			varstr_free(node->vdata);
+		}
+		free(node);
+	}
+}
+
+
+static ch_stack_t ch_stack_push_op(ch_stack_t stack, const unsigned char * op)
+{
+	ch_stack_node_t * node = ch_stack_node_new(ch_stack_node_type_op, op, 1);
+	assert(node);
+	return ch_stack_push(stack, node);
+}
+
+static int parse_sig_script(const unsigned char * begin, 
+	const unsigned char * p_end,
+	ch_stack_t * p_stack_op, 
+	ch_stack_t * p_stack_data,
+	ch_stack_t * p_stack_alt)
+{
+	ch_stack_t st_op = NULL, st_data = NULL, st_alt = NULL;
+	
+	const unsigned char * p = begin;
+	st_op = ch_stack_push_op(st_op, p++);
+	
+	while((p < p_end) && st_op)
+	{
+		ch_stack_node_t * op_node = ch_stack_pop(&st_op);
+		assert(op_node && op_node->type == ch_stack_node_type_op);
+		
+		unsigned char op = op_node->op[0];
+		assert(op);
+		
+		if(op < OP_PUSHDATA1)	/* push [op] bytes data */
+		{
+			st_data = ch_stack_push(
+				st_data, 
+				ch_stack_node_new(ch_stack_node_type_data, p, op));
+			p += (size_t)op;
+		}else
+		{	
+			size_t cb = 0;
+			switch(op)
+			{
+			case OP_PUSHDATA1:
+				cb = p[1];
+				p += 2;
+				break;
+			case OP_PUSHDATA2:
+				cb = p[1] + (((uint32_t)p[2]) << 8);
+				p += 3;
+				break;
+			case OP_PUSHDATA4:
+				cb = p[1] 
+					+ (((uint32_t)p[2]) << 8) 
+					+ (((uint32_t)p[3]) << 16) 
+					+ (((uint32_t)p[4]) << 24);
+				p += 5;
+				break;
+				
+			default:
+				fprintf(stderr, "unsupported op: %.2x\n", op);
+				return -1;
+			}
+			printf("op push [%lu] bytes...\n", cb);
+			#define MAX_TXIN_SCRIPT_LEN 4096
+			assert(cb < MAX_TXIN_SCRIPT_LEN);
+			#undef MAX_TXIN_SCRIPT_LEN
+			
+			st_data = ch_stack_push(
+				st_data, 
+				ch_stack_node_new(ch_stack_node_type_data, p, cb));
+			p += cb;
+			
+		}
+		if(op_node) ch_stack_node_free(op_node);
+		
+		if(p < p_end)
+		{
+			st_op = ch_stack_push_op(st_op, p++);
+		}
+		
+	}
+	
+	*p_stack_data = st_data;
+	*p_stack_op = st_op;
+	*p_stack_alt = st_alt;
+	
+	return 0;
+	
+	UNUSED(st_alt);
+}  
+
+static int verify_redeem_script(const unsigned char * begin, 
+	const unsigned char * p_end,
+	ch_stack_t * p_stack_op, 
+	ch_stack_t * p_stack_data,
+	ch_stack_t * p_stack_alt,
+	const unsigned char * msg_hash
+	)
+{
+	
+	ch_stack_t st_op = * p_stack_op, st_data = * p_stack_data, st_alt = * p_stack_alt;
+	
+	const unsigned char * p = begin;
+	st_op = ch_stack_push_op(st_op, p++);
+	
+	ch_stack_dump(st_data);
+	
+	while(st_op)
+	{
+		ch_stack_node_t * op_node = ch_stack_pop(&st_op);
+		assert(op_node && op_node->type == ch_stack_node_type_op);
+		
+		unsigned char op = op_node->op[0];
+		assert(op);
+		
+		if(op < OP_PUSHDATA1)	/* push [op] bytes data */
+		{
+			INDENT(); printf(" ==> OP_PUSH(%d) \n", (int)op);
+			st_data = ch_stack_push(
+				st_data, 
+				ch_stack_node_new(ch_stack_node_type_data, p, op));
+			p += (size_t)op;
+		}else
+		{	
+			ch_stack_node_t * data_node = NULL;
+			unsigned char hash[32];
+			
+			size_t cb = 0;
+			switch(op)
+			{
+			case OP_PUSHDATA1:
+				cb = p[0];
+				p++;
+				break;
+			case OP_PUSHDATA2:
+				cb = p[0] + (((uint32_t)p[1]) << 8);
+				p += 2;
+				break;
+			case OP_PUSHDATA4:
+				cb = p[0] 
+					+ (((uint32_t)p[1]) << 8) 
+					+ (((uint32_t)p[2]) << 16) 
+					+ (((uint32_t)p[3]) << 24);
+				p += 4;
+				break;
+			case OP_DUP:
+				INDENT(); printf(" ==> OP_DUP \n");
+				assert(st_data);
+				{
+				ch_stack_node_t * node = ch_stack_node_new(
+					ch_stack_node_type_data, 
+					(unsigned char *)varstr_get(st_data->vdata), 
+					varstr_strlen(st_data->vdata));
+				
+				st_data = ch_stack_push(st_data, node);
+				}
+				break;
+			case OP_HASH160:
+				INDENT(); printf(" ==> OP_HASH160 \n");
+				data_node = ch_stack_pop(&st_data);
+				assert(data_node);
+				
+				hash160(varstr_get(st_data->vdata), 
+					varstr_strlen(st_data->vdata), hash);
+				
+				st_data = ch_stack_push(st_data,
+					ch_stack_node_new(ch_stack_node_type_data,
+						hash, 20));
+				
+				ch_stack_node_free(data_node);
+				break;
+			case OP_EQUALVERIFY:
+				INDENT(); printf(" ==> OP_EQUALVERIFY \n");
+				{
+					ch_stack_node_t * node1 = ch_stack_pop(&st_data);
+					ch_stack_node_t * node2 = ch_stack_pop(&st_data);
+					assert(node1 && node2);
+					
+					int rc = ch_stack_node_compare(node1, node2);
+					
+					if(rc)
+					{
+						
+						INDENT(); printf(" ==> OP_EQUALVERIFY failed \n");
+						dump_line(stdout, "node1", 
+							node1->vdata, varstr_size(node1->vdata));
+						dump_line(stdout, "node2", 
+							node2->vdata, varstr_size(node2->vdata));
+						ch_stack_node_free(node1);
+						ch_stack_node_free(node2);
+						assert(0 == rc);
+						return -1;
+					}
+					ch_stack_node_free(node1);
+					ch_stack_node_free(node2);
+				}
+				break;
+			case OP_CHECKSIG:
+				INDENT(); printf(" ==> OP_CHECKSIG \n");
+				{
+					int rc = 0;
+					ch_stack_node_t * node_pub = ch_stack_pop(&st_data);
+					ch_stack_node_t * node_sig = ch_stack_pop(&st_data);
+					assert(node_pub && node_pub);
+					
+					secp256k1_context * secp = secp256k1_context_create(
+						SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
+					secp256k1_pubkey pubkey;
+					secp256k1_ecdsa_signature sig;
+					
+					rc = secp256k1_ec_pubkey_parse(secp, &pubkey,
+						(unsigned char *)varstr_get(node_pub->vdata),
+						varstr_strlen(node_pub->vdata));
+					assert(rc);
+					
+					rc = secp256k1_ecdsa_signature_parse_der(secp, &sig,
+						(unsigned char *)varstr_get(node_sig->vdata),
+						varstr_strlen(node_sig->vdata) - 1);
+					assert(rc);
+					
+					rc = secp256k1_ecdsa_verify(secp, &sig, msg_hash, &pubkey);
+					
+					st_data = ch_stack_push(st_data,
+						ch_stack_node_new(ch_stack_node_type_data, 
+							(unsigned char *)&rc, sizeof(rc)));
+					
+					
+					
+					ch_stack_node_free(node_pub);
+					ch_stack_node_free(node_sig);
+					secp256k1_context_destroy(secp);
+					
+				}
+				break;
+				
+			default:
+				fprintf(stderr, "unsupported op: %.2x\n", op);
+				return -1;
+			}
+			printf("op push [%lu] bytes...\n", cb);
+			#define MAX_TXIN_SCRIPT_LEN 4096
+			assert(cb < MAX_TXIN_SCRIPT_LEN);
+			#undef MAX_TXIN_SCRIPT_LEN
+			
+			if(cb)
+			{
+				st_data = ch_stack_push(
+					st_data, 
+					ch_stack_node_new(ch_stack_node_type_data, p, cb));
+				p += cb;
+			}
+		}
+		if(op_node) ch_stack_node_free(op_node);
+		
+		if(p < p_end)
+		{
+			st_op = ch_stack_push_op(st_op, p++);
+		}
+		
+	}
+	
+	*p_stack_data = st_data;
+	*p_stack_op = st_op;
+	*p_stack_alt = st_alt;
+	
+	return 0;
+	
+	UNUSED(st_alt);
+}
+
+#endif
