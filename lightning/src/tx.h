@@ -5,12 +5,18 @@
 #include <stdint.h>
 
 #include "satoshi-types.h"
+#include "satoshi-script.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 typedef struct raw_txin raw_txin_t;
+enum raw_txin_type
+{
+	raw_txin_type_p2pkh = 0,
+	raw_txin_type_p2sh = 1,
+};
 struct raw_txin
 {
 	struct
@@ -18,11 +24,19 @@ struct raw_txin
 		uint8_t prev_hash[32];
 		uint32_t index;
 	}outpoint;
-	
-	unsigned char sig_script[4096];
+	union
+	{
+		unsigned char sig_script[4096];
+		varstr_t vsig_script;
+	};
 	size_t cb_sig_script;
 	
-	unsigned char redeem_script[100];
+	enum raw_txin_type type;
+	union
+	{
+		unsigned char redeem_script[100];
+		varstr_t vredeem_script;
+	};
 	size_t cb_redeem_script;
 	
 	unsigned char sig[100];
@@ -30,7 +44,7 @@ struct raw_txin
 	
 	uint32_t hash_type;
 	
-	unsigned char pubkey[65];
+	unsigned char pubkey[MAX_SCRIPT_ELEMENT_SIZE];	/* pubkey or p2sh script */
 	size_t cb_pubkey;
 	
 	uint32_t sequence;
@@ -50,7 +64,10 @@ typedef struct satoshi_raw_tx
 	uint32_t lock_time;
 }satoshi_raw_tx_t;
 
-
+size_t parse_tx_v1(const unsigned char * tx, 
+	size_t tx_size, 
+	satoshi_raw_tx_t * raw_tx);
+void satoshi_raw_tx_dump(satoshi_raw_tx_t * raw_tx);
 
 #ifdef __cplusplus
 }

@@ -200,14 +200,39 @@ size_t parse_tx_v1(const unsigned char * tx,
 		
 		
 		varstr_t * vsig_hashtype = (varstr_t *)((unsigned char *)vsig_pubkey + varint_size((varint_t *)vsig_pubkey));	
-		unsigned  char * sig_der = (unsigned char *)vsig_hashtype + varint_size((varint_t *)vsig_hashtype);
 		
+		
+		if(varstr_strlen(vsig_hashtype) == 0)	/*  p2sh */
+		{
+			txin->type = raw_txin_type_p2sh;
+			
+		//	src = (unsigned char *)vsig_hashtype + 1;	/* skip OP_0 */
+			vsig_hashtype = (varstr_t *)((unsigned char *)vsig_hashtype + 1);
+			
+			//~ /* copy signature */
+			//~ txin->cb_sig = varstr_strlen(vsig_hashtype) - 1;
+			//~ memcpy(txin->sig, sig_der, txin->cb_sig);
+			//~ 
+			//~ src += varstr_size(vsig_hashtype);			
+			//src += txin->cb_sig_script;
+			
+			
+		}else
+		{
+			txin->type = raw_txin_type_p2pkh;
+			
+			
+		}
+		
+		unsigned  char * sig_der = (unsigned char *)vsig_hashtype + varint_size((varint_t *)vsig_hashtype);
 		/* copy signature */
 		txin->cb_sig = varstr_strlen(vsig_hashtype) - 1;
 		memcpy(txin->sig, sig_der, txin->cb_sig);
 		
 		/* get hash type */
 		txin->hash_type = sig_der[txin->cb_sig];
+		
+		
 		varstr_t * vpub = (varstr_t *)((unsigned char *)vsig_hashtype + varstr_size(vsig_hashtype));
 		
 		/* copy pubkey */
@@ -217,6 +242,7 @@ size_t parse_tx_v1(const unsigned char * tx,
 		
 		/* calc redeem script */
 		p2pkh_to_redeem_script(vpub, txin->redeem_script, &txin->cb_redeem_script);
+		
 		
 		/* copy sequence */
 		txin->sequence = *(uint32_t *)src; 
@@ -228,6 +254,7 @@ size_t parse_tx_v1(const unsigned char * tx,
 	raw_tx->txouts_data = malloc(raw_tx->cb_txouts);
 	assert(NULL != raw_tx->txouts_data);	
 	memcpy(raw_tx->txouts_data, src, raw_tx->cb_txouts);
+	
 	
 	/* parse txouts */
 	if(raw_tx->txouts_data){
