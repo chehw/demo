@@ -26,6 +26,24 @@
  * 
  */
 
+/** 
+如果同一地址的两次交易随机产生的k值重复，则可以直接计算出私钥。方法如下：
+假设： 
+  e1=hash(raw_tx1)
+  e2=hash(raw_tx2)
+  sig1=[ r1, s1 ]
+  sig2=[ r2, s2 ] 
+如果k值重复，则r1 = r2 = r;
+其中，r, e1 , e2, s1, s2 均为整数（256bits, 32字节），且这5个数都是已知的（从TX数据里可以直接获取）
+
+可以先根据下面的公式计算出k值：
+  k=(e1 - e2) / (s1 - s2)
+
+然后即可得到私钥d ：
+  d=((s1 × k ) - e1) / r
+
+ */
+
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,7 +88,7 @@ static inline void dump_mpz(const char * prefix, mpz_t m)
  * 	type: pay to public key hash
  *  
  */
-static int p2pkh_to_redeem_script(varstr_t * vpub, unsigned char * redeem_script, size_t * cb_redeem_script)
+static int pubkey_to_p2pkh_script(varstr_t * vpub, unsigned char * pk_script, size_t * cb_pk_script)
 {
 	static unsigned char prefix[] = {	/* p2pkh script prefix */
 		0x19,	 /* script length = 25 bytes */
@@ -85,7 +103,7 @@ static int p2pkh_to_redeem_script(varstr_t * vpub, unsigned char * redeem_script
 		0xac	/* OP_CHECKSIG */
 	};
 	
-	unsigned char * dst = redeem_script;
+	unsigned char * dst = pk_script;
 	 
 	unsigned char hash[20];
 	unsigned char * pubkey = (unsigned char *)varstr_get(vpub);
@@ -102,7 +120,7 @@ static int p2pkh_to_redeem_script(varstr_t * vpub, unsigned char * redeem_script
 	memcpy(dst, suffix, sizeof(suffix));
 	dst += sizeof(suffix);
 	
-	*cb_redeem_script = dst - redeem_script;
+	*cb_pk_script = dst - pk_script;
 	return 0;
 }
 
@@ -170,12 +188,12 @@ static uint32_t parse_tx(const unsigned char * tx, size_t tx_size,
 	
 	src += varstr_size(vsig_pubkey); // skip signature and pubkey
 	
-	/* replace with redeem script */
+	/* replace with utxo's pk_script */
 	size_t cb_redeem_script = 0;
-	rc = p2pkh_to_redeem_script(vpub, dst, &cb_redeem_script);
+	rc = pubkey_to_p2phk_script(vpub, dst, &cb_pk_script);
 
-	assert(0 == rc && cb_redeem_script > 20);
-	dst += cb_redeem_script;
+	assert(0 == rc && cb_pk_script > 20);
+	dst += cb_pk_script;
 	
 	/* copy data */
 	size = p_end - src;
