@@ -62,7 +62,7 @@ static inline void dump_mpz(const char * prefix, mpz_t m)
  * 	type: pay to public key hash
  *  
  */
-static int p2pkh_to_redeem_script(varstr_t * vpub, unsigned char * redeem_script, size_t * cb_redeem_script)
+static int pubkey_to_p2pkh_script(varstr_t * vpub, unsigned char * pk_script, size_t * cb_script)
 {
 	static unsigned char prefix[] = {	/* p2pkh script prefix */
 		0x19,	 /* script length = 25 bytes */
@@ -77,7 +77,7 @@ static int p2pkh_to_redeem_script(varstr_t * vpub, unsigned char * redeem_script
 		0xac	/* OP_CHECKSIG */
 	};
 	
-	unsigned char * dst = redeem_script;
+	unsigned char * dst = pk_script;
 	 
 	unsigned char hash[20];
 	unsigned char * pubkey = (unsigned char *)varstr_get(vpub);
@@ -94,7 +94,7 @@ static int p2pkh_to_redeem_script(varstr_t * vpub, unsigned char * redeem_script
 	memcpy(dst, suffix, sizeof(suffix));
 	dst += sizeof(suffix);
 	
-	*cb_redeem_script = dst - redeem_script;
+	*cb_script = dst - pk_script;
 	return 0;
 }
 
@@ -107,8 +107,8 @@ struct raw_txin
 		uint32_t index;
 	}outpoint;
 	
-	unsigned char redeem_script[100];
-	size_t cb_redeem_script;
+	unsigned char pk_script[100];
+	size_t cb_pk_script;
 	
 	unsigned char sig[100];
 	size_t cb_sig;
@@ -162,10 +162,10 @@ int satoshi_raw_tx_get_preimage(satoshi_raw_tx_t * raw_tx, int index, unsigned c
 		dst += sizeof(satoshi_outpoint_t);
 		
 		
-		if(i == index)	/* 如果是当前准备签名（或验证）的txin，就附加其公钥对应的[redeem_script] */
+		if(i == index)	/* 如果是当前准备签名（或验证）的txin，就附加其公钥对应的[pk_script] */
 		{
-			memcpy(dst, txin->redeem_script, txin->cb_redeem_script);
-			dst += txin->cb_redeem_script;
+			memcpy(dst, txin->pk_script, txin->cb_pk_script);
+			dst += txin->cb_pk_script;
 			
 			hash_type = txin->hash_type;
 		}else /* 否则，将此处的脚本长度设为0 */
@@ -241,8 +241,8 @@ static size_t parse_tx_v1(const unsigned char * tx,
 		memcpy(txin->pubkey, varstr_get(vpub), txin->cb_pubkey);
 		src += varstr_size(vsig_pubkey); // skip signature and pubkey
 		
-		/* calc redeem script */
-		p2pkh_to_redeem_script(vpub, txin->redeem_script, &txin->cb_redeem_script);
+		/* calc pk_script ( if no utxo data )*/
+		pubkey_to_p2pkh_script(vpub, txin->pk_script, &txin->cb_pk_script);
 		
 		/* copy sequence */
 		txin->sequence = *(uint32_t *)src; 
